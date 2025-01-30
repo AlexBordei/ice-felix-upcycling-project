@@ -1,42 +1,42 @@
-#include <WiFi.h>
-#include <HTTPClient.h>
+#include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
+#include <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
+#include <WiFiClient.h>
 
-// Replace with your network credentials
-const char* ssid = "eaea.ro";
-const char* password = "EarlyAlphaEngineering2024";
-
-// Replace with your OpenAI API key
 const char* apiKey = "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";
 
+bool connected = false;
 void setup() {
-  // Initialize Serial
-  Serial.begin(9600);
+  Serial.begin(115200);
 
-  // Connect to Wi-Fi network
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi ..");
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print('.');
-    delay(1000);
+  WiFiManager wm;
+
+  bool res;
+  res = wm.autoConnect("AutoConnectAP", "password");  // password protected ap
+
+  if (!res) {
+    Serial.println("Failed to connect");
+    ESP.restart();
+  } else {
+    Serial.println("connected...yeey :)");
+    connected = true;
   }
-  Serial.println("\nConnected to WiFi. IP address: ");
-  Serial.println(WiFi.localIP());
-
-  Serial.println("Type your message in the Serial Monitor:");
 }
 
 void loop() {
-  // Check if user entered something in the Serial Monitor
-  if (Serial.available()) {
-    String userInput = Serial.readStringUntil('\n'); // Read user input
-    userInput.trim(); // Remove any trailing whitespace or newlines
+  if (connected) {
+    // Check if user entered something in the Serial Monitor
+    if (Serial.available()) {
+      String userInput = Serial.readStringUntil('\n');  // Read user input
+      userInput.trim();                                 // Remove any trailing whitespace or newlines
 
-    if (userInput.length() > 0) {
-      sendMessageToOpenAI(userInput);
+      if (userInput.length() > 0) {
+        sendMessageToOpenAI(userInput);
+      }
     }
   }
 }
+
 
 void sendMessageToOpenAI(String userInput) {
   // OpenAI API endpoint
@@ -47,10 +47,11 @@ void sendMessageToOpenAI(String userInput) {
   payload += "{\"role\": \"developer\", \"content\": \"You are a helpful assistant.\"},";
   payload += "{\"role\": \"user\", \"content\": \"" + userInput + "\"}";
   payload += "]}";
+  WiFiClient client;
 
   // Send HTTP POST request
   HTTPClient http;
-  http.begin(apiUrl);
+  http.begin(client, apiUrl);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " + String(apiKey));
 
@@ -72,5 +73,5 @@ void sendMessageToOpenAI(String userInput) {
     Serial.print("Error: HTTP response code ");
     Serial.println(httpResponseCode);
   }
-  http.end(); // Close connection
+  http.end();  // Close connection
 }
