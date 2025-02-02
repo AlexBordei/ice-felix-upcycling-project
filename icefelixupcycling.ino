@@ -1,76 +1,194 @@
-#include <WiFi.h>
-#include <HTTPClient.h>
+#include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
+#include <ESP8266HTTPClient.h>
+#include <WiFiClientSecure.h>  // Secure client for HTTPS
 #include <ArduinoJson.h>
+#include <SoftwareSerial.h>
 
-// Replace with your network credentials
-const char* ssid = "eaea.ro";
-const char* password = "EarlyAlphaEngineering2024";
+const char* apiKey = "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";
 
-// Replace with your OpenAI API key
-const char* apiKey = "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";
+
+// Define additional serial port
+SoftwareSerial SerialOne(D1, D2); // RX, TX
 
 void setup() {
-  // Initialize Serial
-  Serial.begin(9600);
+  Serial.begin(115200);  // Hardware Serial for debugging
+  SerialOne.begin(9600); // Software Serial for main communication
 
-  // Connect to Wi-Fi network
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi ..");
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print('.');
-    delay(1000);
+  clearScreen();  // Clear screen at startup
+
+  SerialOne.println("=== Early Alpha Engineering AI Chat ===");
+  SerialOne.println("Connecting to WiFi...");
+  SerialOne.println("===========================================");
+  SerialOne.println();
+
+  WiFiManager wm;
+
+  // Connect to WiFi with a fallback AP mode
+  if (!wm.autoConnect("AutoConnectAP", "password")) {
+    Serial.println("Failed to connect, restarting...");
+    SerialOne.println("Failed to connect. Device will restart...");
+    delay(3000);
+    ESP.restart();
   }
-  Serial.println("\nConnected to WiFi. IP address: ");
-  Serial.println(WiFi.localIP());
 
-  Serial.println("Type your message in the Serial Monitor:");
+  Serial.println("Connected to WiFi!");
+  
+  // Show ready message only after successful connection
+  clearScreen();
+  SerialOne.println("=== Early Alpha Engineering AI Chat ===");
+  SerialOne.println("Connected and ready!");
+  SerialOne.println("Type your message and press Enter to send.");
+  // SerialOne.println("===========================================");
 }
 
 void loop() {
-  // Check if user entered something in the Serial Monitor
-  if (Serial.available()) {
-    String userInput = Serial.readStringUntil('\n'); // Read user input
-    userInput.trim(); // Remove any trailing whitespace or newlines
+  static unsigned long lastCheckTime = 0;
+  static bool wasConnected = false;
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wasConnected) {
+      // Just reconnected
+      clearScreen();
+      SerialOne.println("=== Early Alpha Engineering AI Chat ===");
+      SerialOne.println("Connection restored!");
+      SerialOne.println("===========================================");
+      SerialOne.println();
+      SerialOne.write('\r');
+      wasConnected = true;
+    }
+    checkSerialAndSend(Serial);    // For debug input
+    checkSerialAndSend(SerialOne); // For main communication
+  } else {
+    // Check every 5 seconds
+    if (millis() - lastCheckTime > 5000) {
+      if (wasConnected) {
+        // Just disconnected
+        clearScreen();
+        SerialOne.println("=== Early Alpha Engineering AI Chat ===");
+        SerialOne.println("WiFi disconnected!");
+        SerialOne.println("Attempting to reconnect...");
+        SerialOne.println("===========================================");
+        SerialOne.println();
+        SerialOne.write('\r');
+      }
+      Serial.println("WiFi disconnected! Waiting for reconnection...");
+      lastCheckTime = millis();
+      wasConnected = false;
+    }
+  }
 
-    if (userInput.length() > 0) {
-      sendMessageToOpenAI(userInput);
+  // Check for clear screen command
+  if (SerialOne.available()) {
+    String msg = SerialOne.readStringUntil('\n');
+    msg.trim();
+    if (msg == "[6~") {
+      clearScreen();
+      // Reprint the welcome message
+      SerialOne.println("=== Early Alpha Engineering AI Chat ===");
+      SerialOne.println("Type your message and press Enter to send.");
+      SerialOne.println("===========================================");
+      SerialOne.println();
     }
   }
 }
 
-void sendMessageToOpenAI(String userInput) {
-  // OpenAI API endpoint
-  String apiUrl = "https://api.openai.com/v1/chat/completions";
+void checkSerialAndSend(Stream &serial) {
+  static String inputBuffer; // Buffer to store input data
+  
+  while (serial.available()) {
+    char receivedChar = serial.read();
+    
+    // Echo character to debug Serial immediately if from SerialOne
+    if (&serial == &SerialOne) {
+      Serial.print(receivedChar);
+    }
+    
+    if (receivedChar == '\n') { // User pressed Enter, send request
+      inputBuffer.trim();  // Remove trailing spaces
+      if (inputBuffer.length() > 0) {
+        Serial.println(); // New line after the echoed input
+        Serial.println("Debug: Received complete message: " + inputBuffer);
+        
+        Serial.println("Debug: Sending request to OpenAI...");
+        SerialOne.println("Sending request to OpenAI...");
+        sendMessageToOpenAI(inputBuffer, SerialOne);
+        inputBuffer = ""; // Clear buffer after sending
+      }
+    } else {
+      inputBuffer += receivedChar;  // Append character to buffer
+    }
+  }
+}
 
-  // Create JSON payload
-  String payload = "{\"model\": \"gpt-4o-mini\", \"messages\": [";
-  payload += "{\"role\": \"developer\", \"content\": \"You are a helpful assistant.\"},";
-  payload += "{\"role\": \"user\", \"content\": \"" + userInput + "\"}";
-  payload += "]}";
+void sendMessageToOpenAI(String userInput, Stream &responseSerial) {
+  WiFiClientSecure client;
+  client.setInsecure();
 
-  // Send HTTP POST request
   HTTPClient http;
-  http.begin(apiUrl);
+  http.begin(client, "https://api.openai.com/v1/chat/completions");
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " + String(apiKey));
 
-  int httpResponseCode = http.POST(payload);
-  if (httpResponseCode == HTTP_CODE_OK) {
-    String response = http.getString();
+  // Create JSON payload for a single message
+  DynamicJsonDocument jsonDoc(2048);
+  jsonDoc["model"] = "gpt-4";
+  jsonDoc["max_tokens"] = 1000;
+  jsonDoc["temperature"] = 0.7;
+  JsonArray messages = jsonDoc.createNestedArray("messages");
 
-    // Parse JSON response
-    DynamicJsonDocument jsonDoc(4096);
-    DeserializationError error = deserializeJson(jsonDoc, response);
+  // Add system message
+  JsonObject systemMessage = messages.createNestedObject();
+  systemMessage["role"] = "system";
+  systemMessage["content"] = "You are a helpful assistant. Provide concise responses.";
+
+  // Add current user message
+  JsonObject userMessage = messages.createNestedObject();
+  userMessage["role"] = "user";
+  userMessage["content"] = userInput;
+
+  String payload;
+  serializeJson(jsonDoc, payload);
+  
+  Serial.println("Debug: Sending payload to OpenAI:");
+  Serial.println(payload);
+
+  int httpResponseCode = http.POST(payload);
+
+  if (httpResponseCode > 0) {
+    String response = http.getString();
+    Serial.println("Debug: Received HTTP Response Code: " + String(httpResponseCode));
+    Serial.println("Debug: Raw API Response:");
+    Serial.println(response);
+
+    DynamicJsonDocument responseJson(2048);
+    DeserializationError error = deserializeJson(responseJson, response);
+
     if (error) {
-      Serial.print("Failed to parse JSON: ");
-      Serial.println(error.c_str());
+      String errorMsg = "Error parsing response: " + String(error.c_str());
+      responseSerial.println(errorMsg);
+      Serial.println("Debug: " + errorMsg);
     } else {
-      String outputText = jsonDoc["choices"][0]["message"]["content"].as<String>();
-      Serial.println("ChatGPT: " + outputText);
+      String outputText = responseJson["choices"][0]["message"]["content"].as<String>();
+      
+      Serial.println("Debug: ChatGPT Response:");
+      Serial.println(outputText);
+      
+      responseSerial.println("ChatGPT: " + outputText);
     }
   } else {
-    Serial.print("Error: HTTP response code ");
-    Serial.println(httpResponseCode);
+    String errorMsg = "HTTP Request failed. Error code: " + String(httpResponseCode);
+    responseSerial.println(errorMsg);
+    Serial.println("Debug: " + errorMsg);
   }
-  http.end(); // Close connection
+
+  http.end();
+}
+
+// Function to clear the screen
+void clearScreen() {
+  SerialOne.write(27); // ESC
+  SerialOne.print("[2J"); // Clear screen
+  SerialOne.write(27);
+  SerialOne.print("[H");  // Move cursor to home position
+  SerialOne.write('\r');  // Return cursor to start of line
 }
